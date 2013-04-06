@@ -19,15 +19,12 @@ if (!$Authenticator->user_is_logged_in() || !$Authenticator->user_is_super() || 
 	<input type="hidden" name="current_password" value="<?php echo $user->password() ?>">
 		<?php
 	}
-	if ($Authenticator->user_is_logged_in() && !empty($access_level_list)) {
-		?>
-	<p class="<?php echo $Navigation->tiger_stripe('striped_User_form') ?>">
-		<?php print Form::select($access_level_list,'user_level','user[user_level]','Access Level',$user_level,$user->user_level_is_required(),$user->user_level_is_valid()) ?>
-	</p>
-		<?php
+	if (!empty($access_level_list) && !empty($account_status_list)) {
+		print ModelForm::select($access_level_list,$user,'user_level');
+		print ModelForm::select($account_status_list,$user,'status');
 	} else {
 		?>
-	<input type="hidden" name="user[user_level]" value="<?php echo $user_level ?>">
+		<input type="hidden" name="user[user_level]" value="<?php echo $user_level ?>">
 		<?php
 	}
 
@@ -37,7 +34,7 @@ if (!$Authenticator->user_is_logged_in() || !$Authenticator->user_is_super() || 
 	
 	print ModelForm::text($user,'username');
 	
-	print ModelForm::password($user,'password',null,array('show_strength_meter' => true));
+	print ModelForm::password($user,'password',null,array('show_strength_meter' => true, 'autocomplete' => 'off'));
 
 	?>
 	<p class="<?php echo $Navigation->tiger_stripe('striped_User_form') ?>">
@@ -47,29 +44,19 @@ if (!$Authenticator->user_is_logged_in() || !$Authenticator->user_is_super() || 
 
 	print ModelForm::text($user,'email_address');
 
-	print ModelForm::text($user,'security_question');
+	// The following two fields are not required by default. Add them in if you want to use them as an extra level of security for users to reset their password. Be sure to
+	// set the db columns to not allow NULL so they will be validated
 
-	print ModelForm::text($user,'security_answer','You can leave these blank, but they will be required if you want to be able to reset your password.');
+	// print ModelForm::text($user,'security_question');
 
-	if ($user->is_new() && !$Authenticator->user_is_logged_in()) {
-		?>
-	<p class="<?php echo $Navigation->tiger_stripe('striped_User_form') ?>">
-		<?php echo Form::text('security_code','security_code','Security Code','',true,$Authenticator->field_is_valid('security_code'),array('maxlength' => '15')); ?>
-	</p>
-	<?php $Navigation->tiger_stripe('striped_User_form') ?>
-	<p class="<?php echo $Navigation->tiger_stripe('striped_User_form') ?>">
-		<label for="captcha-widget">&nbsp;</label><span id="captcha-widget" class="leftfloat"><?php Captcha::render_widget(); ?></span>
-		<span style="clear:both;height:0;display:block"></span>
-	</p>
-		<?php
-	}
-	?>
-	<?php print Form::footer($Authenticator,$user,(!$user->is_new() && $Authenticator->user_can_delete($user)),'Submit',$cancel_url) ?>
+	// print ModelForm::text($user,'security_answer','You can leave these blank, but they will be required if you want to be able to reset your password.');
+
+	print Form::footer($Authenticator,$user,(!$user->is_new() && $Authenticator->user_can_delete($user)),__('Submit'),$cancel_url) ?>
 <script type="text/javascript" charset="utf-8">
-	$(document).observe('dom:loaded',function() {
-		$('user-edit-form').observe('submit',function(event) {
-			Event.stop(event);
+	$(document).ready(function() {
+		$('#user-edit-form').submit(function() {
 			new Biscuit.Ajax.FormValidator('user-edit-form');
+			return false;
 		});
 	});
 </script>

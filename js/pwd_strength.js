@@ -1,19 +1,18 @@
 var PasswordStrength = {
 	startMeter: function(element_id) {
-		$(element_id).observe('keyup',function(event) {
-			var el = Event.element(event);
-			PasswordStrength.updateStrength($F(el));
+		$('#'+element_id).keyup(function() {
+			PasswordStrength.updateStrength($(this).val());
 		});
 	},
 	updateStrength: function(pw) {
 		var strength = this.getStrength(pw);
-		var width = (200/32)*strength;
+		var width = (140/32)*strength;
 		if (width > 50) {
-			$('pwd-strength-meter').addClassName('light');
-		} else if ($('pwd-strength-meter').hasClassName('light')) {
-			$('pwd-strength-meter').removeClassName('light');
+			$('#pwd-strength-meter').addClass('light');
+		} else if ($('#pwd-strength-meter').hasClass('light')) {
+			$('#pwd-strength-meter').removeClass('light');
 		}
-		new Effect.Morph('pwd-strength-meter', {style:'width:'+width+'px', duration:'0.4'}); 
+		$('#pwd-strength-meter').animate({width: width+'px'},50);
 	},
 	getStrength: function(passwd) {
 		intScore = 0;
