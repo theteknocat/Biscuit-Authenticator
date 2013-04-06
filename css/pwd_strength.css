@@ -1,0 +1,38 @@
+/* This CSS is designed to layout the password strength meter based on the standard form layout and CSS.  If you customize your forms css, be sure to customize this as well. */
+
+#pwd-strength {
+	display: block;
+	float: left;
+	width: 142px;
+	height: 18px;
+	background: #fff;
+	margin: 4px 0 0 4px;
+}
+
+#pwd-meter-container {
+	display: block;
+	float: left;
+	width: 140px;
+	height: 16px;
+	border: 1px solid #888;
+}
+
+#pwd-strength-meter {
+	display: block;
+	float: left;
+	width: 0;
+	height: 16px;
+	overflow: visible;
+	background: url(/framework/modules/authenticator/images/pwd-strength.gif) top left no-repeat;
+	margin: 0;
+	line-height: 1.5em;
+	color: #888;
+}
+
+#pwd-strength-meter.light {
+	color: #eee;
+}
+
+#attr_password {
+	float: left;
+}
