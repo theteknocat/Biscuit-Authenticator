@@ -11,10 +11,11 @@
 		<?php print Form::password('password_confirmation','password_confirmation','Confirm Password',$password_confirmation,$user->password_is_required(),$user->password_confirmation_is_valid(),array('autocomplete' => 'off')) ?>
 	</p>
 	<?php
-	if ($user->security_question_is_required() && $user->security_answer_is_required()) {
+	if ($user->has_security_question() && $user->has_security_answer() && $user->security_question_is_required() && $user->security_answer_is_required()) {
 		?>
 	<p class="<?php echo $Navigation->tiger_stripe('striped_User_form') ?>">
-		<?php echo $user->security_question(); ?>
+		<label><?php echo __('Security Question'); ?>:</label><span class="field-container"><?php echo $user->security_question(); ?></span>
+		<span style="clear:both;height:0;display:block"></span>
 	</p>
 	<?php $Navigation->tiger_stripe('striped_User_form') ?>
 	<p class="<?php echo $Navigation->tiger_stripe('striped_User_form') ?>">
@@ -32,7 +33,7 @@
 		<span style="clear:both;height:0;display:block"></span>
 	</p>
 	<?php print Form::footer($Authenticator,$user,false,'Save','no-cancel-button') ?>
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
 	$(document).ready(function() {
 		$('#attr_password').focus();
 		$('#password-reset-form').submit(function() {

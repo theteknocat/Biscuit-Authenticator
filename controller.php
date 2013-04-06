@@ -2,16 +2,40 @@
 define('ACCOUNT_SUSPENDED',1);
 define('ACCOUNT_ACTIVE',2);
 define('ACCOUNT_PENDING',3);
+if (!defined('BISCUIT_HASH_SALT')) {
+	// For backwards compatibility with sites that don't have their own unique hash salt defined. Very important to ensure sites get their config updated
+	// with a unique one
+	define('BISCUIT_HASH_SALT', 'ty1X#BZZ-zP99KTtt9Llpgft9EYAY!wbvg1rJKcI#SD7mhkI');
+}
 /**
  * Provides user authentication functions
  *
  * @package Modules
+ * @subpackage Authenticator
  * @author Peter Epp
  * @copyright Copyright (c) 2009 Peter Epp (http://teknocat.org)
  * @license GNU Lesser General Public License (http://www.gnu.org/licenses/lgpl.html)
- * @version 2.0
+ * @version 2.0 $Id: controller.php 14791 2013-02-07 20:58:14Z teknocat $
  **/
 class Authenticator extends AbstractModuleController {
+	/**
+	 * Constant to use to indicate auto login when calling perform_login method
+	 */
+	const AUTO_LOGIN = true;
+	/**
+	 * Constant to use to indicate manual login when calling perform_login method
+	 */
+	const MANUAL_LOGIN = false;
+	/**
+	 * Constant to use to indicate skip redirect after login
+	 */
+	const SKIP_LOGIN_REDIRECT = true;
+	/**
+	 * Whether or not the user opted to stay logged in and therefore their session should never expire
+	 *
+	 * @var string
+	 */
+	protected $_keep_logged_in = false;
 	/**
 	 * Array of info about the current page's access level (ie. login url, access level name, access level number)
 	 *
@@ -31,12 +55,21 @@ class Authenticator extends AbstractModuleController {
 	 */
 	protected $_models = array(
 		"User"                  => "User",
-		"AccessLevels"          => "AccessLevels",
+		"AccessLevel"           => "AccessLevel",
 		"AccountStatus"         => "AccountStatus",
 		"UserEmailVerification" => "UserEmailVerification",
 		"PasswordResetToken"    => "PasswordResetToken"
 	);
 	protected $_uncacheable_actions = array('reset-password','login','logout');
+	/**
+	 * Define the sorting options for users and access levels
+	 * 
+	 * @var array
+	 */
+	protected $_index_sort_options = array(
+		'User' => array('first_name' => 'ASC', 'last_name' => 'ASC'),
+		'AccessLevel' => array('id' => 'ASC')
+	);
 	/**
 	 * The action that a URL was requested for. Used by the custom "primary_page" method
 	 *
@@ -77,6 +110,18 @@ class Authenticator extends AbstractModuleController {
 	 * Whether or not access levels have already been defined
 	 */
 	protected $_already_defined_access_levels = false;
+	/**
+	 * Session expiry timeout in seconds. Is set from access_levels table if not overriden
+	 *
+	 * @var string
+	 */
+	protected $_session_expiry_timeout = null;
+	/**
+	 * Place to store extra code to be rendered on the login page
+	 *
+	 * @var string
+	 */
+	protected $_extra_login_form_code;
 
 	public function __construct() {
 		parent::__construct();
@@ -92,6 +137,7 @@ class Authenticator extends AbstractModuleController {
 	 * @author Peter Epp
 	 */
 	public function run() {
+	    $this->register_js('footer', 'session.js');
 		$this->set_login_level();
 		$this->_set_access_info();
 		$this->_session_check();
@@ -99,6 +145,7 @@ class Authenticator extends AbstractModuleController {
 		$this->PasswordResetToken->trash_expired();
 		if ($this->action() == 'new' || $this->action() == 'edit') {
 			$this->register_js('footer','pwd_strength.js');
+			$this->register_js('footer','user-edit.js');
 			$this->register_css(array('filename' => 'pwd_strength.css', 'media' => 'screen'));
 		}
 		if (!$this->Biscuit->page_cache_is_valid() && !$this->Biscuit->request_is_bad()) {
@@ -112,9 +159,11 @@ class Authenticator extends AbstractModuleController {
 	 * @return void
 	 * @author Peter Epp
 	 */
-	private function _session_check() {
+	protected function _session_check() {
+		Event::fire('login_session_check',$this);
+		$this->_keep_logged_in_check();
 		if ($this->user_is_logged_in()) {
-			if (Session::is_expired() && !Request::is_ping_keepalive() && !Request::is_session_refresh()) {
+			if (Session::is_expired() && !Request::is_ping_keepalive()) {
 				$this->action_logout(__("Your login session has expired."));
 				return;
 			}
@@ -125,9 +174,42 @@ class Authenticator extends AbstractModuleController {
 			Session::set_expiry();
 			$this->_check_for_session_extension_requests();
 			if ($this->action() != "logout") {
+				$this->_set_session_timeout_header();
 				// Fire an event to indicate normal logged in state in case any modules need to do something when a user is logged in before anything else happens.
 				// This is useful, for example, if you need to do some sort of check on the user's account before they can access the page.
 				Event::fire("user_is_logged_in");
+			}
+		}
+	}
+	/**
+	 * Check if a user id is set for staying logged in
+	 *
+	 * @return void
+	 * @author Peter Epp
+	 */
+	protected function _keep_logged_in_check() {
+		if (!empty($_COOKIE['stay_logged_in_as'])) {
+			$user_hash = $_COOKIE['stay_logged_in_as'];
+			Event::fire('keep_logged_in_check', $user_hash);
+			if (!$this->user_is_logged_in()) {
+				$user = $this->User->find_by("SHA1(CONCAT(`id`, '".BISCUIT_HASH_SALT."'))",$user_hash);
+				if ($user) {
+					Console::log("Logging user in from cookie...");
+					$this->_keep_logged_in = true;
+					$this->stuff_active_user($user);
+					// Force redirecting to the same page again after auto-login
+					$this->params['login_redirect'] = Request::uri();
+					$this->perform_login();
+					if ($this->_keep_logged_in) {
+						// Extend the cookie
+						Response::set_cookie('stay_logged_in_as', sha1((int)$user->id().BISCUIT_HASH_SALT), time()+(60*60*24*30), '/');
+					}
+				}
+			} else {
+				$user = $this->active_user();
+				if (sha1($user->id().BISCUIT_HASH_SALT) == $user_hash) {
+					$this->_keep_logged_in = true;
+				}
 			}
 		}
 	}
@@ -137,13 +219,24 @@ class Authenticator extends AbstractModuleController {
 	 * @return void
 	 * @author Peter Epp
 	 */
-	private function _check_for_session_extension_requests() {
+	protected function _check_for_session_extension_requests() {
 		if (Request::is_ping_keepalive()) {
-			Console::log("Nothing more than a keep-alive ping. No need to continue.");
-			Bootstrap::end_program();
-		} else if (Request::is_session_refresh()) {
-			$this->Biscuit->render_json(array('remaining_session_time' => $this->session_remaining_time()));
-			Bootstrap::end_program();
+			$this->_set_session_timeout_header();
+			$this->Biscuit->render('Session extended');
+			Bootstrap::end_program(true);
+		}
+	}
+	/**
+	 * Set the session timeout header used on ajax requests to reset the session timeout counter
+	 *
+	 * @return void
+	 * @author Peter Epp
+	 */
+	protected function _set_session_timeout_header() {
+		$remaining_time = $this->session_remaining_time();
+		if ($remaining_time > 0) {
+			// Set a special response header for Ajax requests to ensure that the Javascript session timeout tracker starts counting down from the top again:
+			Response::add_header('X-Biscuit-Session-Time', $remaining_time);
 		}
 	}
 	/**
@@ -152,7 +245,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return void
 	 * @author Peter Epp
 	 */
-	private function _check_page_access() {
+	protected function _check_page_access() {
 		if ($this->Biscuit->Page->access_level() > PUBLIC_USER) {
 			// If the current page is not public, authenticate the currently logged-in user (if any):
 			if (!$this->user_is_logged_in()) {
@@ -172,23 +265,21 @@ class Authenticator extends AbstractModuleController {
 						Session::flash_unset('login_redirect');
     					Session::flash('login_redirect',Request::uri());
 					}
+					if (Request::is_ajax() && Request::type() != 'update') {
+						Response::http_status(403);
+					}
 					Response::redirect($this->access_info->login_url()); // Redirect to the login page for this access level
 				}
 			}
 			elseif (!Permissions::can_access($this->Biscuit->Page->access_level())) {
-			    // The current page has higher than public access restriction, and the currently logged 
-			    // in user does not have a sufficient access level for this page..
-				if (Request::referer() && Request::referer() != Request::uri()) {
-				   $redirect_to = Request::referer();
-				} else {
-				   $redirect_to = '/';
-				}
+				// The current page has higher than public access restriction, and the currently logged 
+				// in user does not have a sufficient access level for this page..
 				Session::flash('user_error', __("You do not have sufficient privileges to access the requested page."));
 				if (Request::is_ajax()) {
 					$this->Biscuit->render_js('document.location.href="'.$redirect_to.'";');
 					Bootstrap::end_program();
 				} else {
-					Response::redirect($redirect_to);
+					Response::redirect('/');
 				}
 				
 			}
@@ -200,7 +291,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return int
 	 * @author Peter Epp
 	 */
-	private function session_remaining_time() {
+	protected function session_remaining_time() {
 		$expiry_time = Session::get('expires_at');
 		return $expiry_time-time();
 	}
@@ -213,7 +304,7 @@ class Authenticator extends AbstractModuleController {
 	 */
 	public function active_user() {
 		if (empty($this->user) && $this->user_is_logged_in()) {
-			$auth_data = Session::get("auth_data");
+			$auth_data = $this->_get_logged_in_session_data();
 			$this->user = $this->User->find($auth_data['id']);
 		}
 		return $this->user;
@@ -225,7 +316,7 @@ class Authenticator extends AbstractModuleController {
 	 * @author Peter Epp
 	 */
 	protected function action_index() {
-		$access_levels = $this->AccessLevels->find_all(array('id' => 'ASC'));
+		$access_levels = $this->AccessLevel->find_all(array('id' => 'ASC'));
 		$levels_by_id = array();
 		foreach ($access_levels as $access_level) {
 			$levels_by_id[$access_level->id()] = $access_level;
@@ -240,6 +331,27 @@ class Authenticator extends AbstractModuleController {
 		parent::action_index();
 	}
 	/**
+	 * Setup pagination for the user list and return the limits
+	 * 
+	 * @return string
+	 * @author Peter Epp
+	 */
+	protected function set_index_limits() {
+		$limits = '';
+		if ($this->action() == 'index') { // Only when indexing users
+			$result_count = $this->User->record_count();
+			$paginator = new PaginateIt();
+			$paginator->SetItemsPerPage(20);
+			$paginator->SetLinksFormat('&laquo; Prev','','Next &raquo;');
+			$paginator->SetLinksHref($this->url());
+			$paginator->SetItemCount($result_count);
+			$limits = $paginator->GetSqlLimit();
+			$this->set_view_var('result_count', $result_count);
+			$this->set_view_var('paginator', $paginator);
+		}
+		return $limits;
+	}
+	/**
 	 * Set access levels in a view var for the edit form for super users creating or editing other users so they can set that user's access level
 	 *
 	 * @param string $mode 
@@ -248,26 +360,52 @@ class Authenticator extends AbstractModuleController {
 	 */
 	protected function action_edit($mode = 'edit') {
 		parent::action_edit($mode);
-		if ($this->user_is_super() && $this->params['id'] != $this->active_user()->id()) {
+		if (($this->action() == 'edit' || $this->action() == 'new') && $this->user_is_logged_in() && $this->params['id'] != $this->active_user()->id()) {
 			$access_levels = $this->access_levels();
 			foreach ($access_levels as $access_level) {
-				if ($access_level->id() != PUBLIC_USER) {
+				if ($access_level->id() != PUBLIC_USER && $access_level->id() != SYSTEM_LORD && $access_level->id() <= $this->active_user()->user_level()) {
 					$access_level_list[] = array(
 						'label' => $access_level->name(),
 						'value' => $access_level->id()
 					);
 				}
 			}
+			$access_level_list = array_reverse($access_level_list);
 			$this->set_view_var('access_level_list',$access_level_list);
-			$account_statuses = $this->AccountStatus->find_all(array('name' => 'ASC'));
-			foreach ($account_statuses as $acct_status) {
-				$account_status_list[] = array(
-					'label' => $acct_status->name(),
-					'value' => $acct_status->id()
-				);
+			if ($this->user_is_account_administrator()) {
+				$account_statuses = $this->AccountStatus->find_all(array('name' => 'ASC'));
+				foreach ($account_statuses as $acct_status) {
+					$account_status_list[] = array(
+						'label' => $acct_status->name(),
+						'value' => $acct_status->id()
+					);
+				}
+				$this->set_view_var('account_status_list',$account_status_list);
 			}
-			$this->set_view_var('account_status_list',$account_status_list);
 		}
+	}
+	/**
+	 * Set the title for the edit page based on mode ('new' or 'edit') and the model name
+	 *
+	 * @param string $mode 
+	 * @param string $model_name 
+	 * @return void
+	 * @author Peter Epp
+	 */
+	protected function set_edit_title($mode,$model_name) {
+		if ($this->Biscuit->Page->slug() == 'users') {
+			parent::set_edit_title($mode,$model_name);
+		}
+	}
+	/**
+	 * Set the title for the show view based on the user name
+	 *
+	 * @param string $model_name 
+	 * @return void
+	 * @author Peter Epp
+	 */
+	protected function set_show_title($model) {
+		$this->title(sprintf(__("Profile of %s"), $model->full_name()));
 	}
 	/**
 	 * Special permission check to see if the current user can edit
@@ -304,6 +442,38 @@ class Authenticator extends AbstractModuleController {
 		return (parent::user_can('delete') && $user->user_level() < SYSTEM_LORD && ($active_user->user_level() > $user->user_level() || $active_user->id() == $user->id()));
 	}
 	/**
+	 * Custom edit permission check for access levels to prevent editing of public level
+	 *
+	 * @param string $access_level 
+	 * @return void
+	 * @author Peter Epp
+	 */
+	public function user_can_edit_access_level($access_level = null) {
+		if (empty($access_level) && (!empty($this->params['id']) || $this->params['id'] === 0 || $this->params['id'] === '0')) {
+			$access_level = $this->AccessLevel->find($this->params['id']);
+		}
+		if (empty($access_level)) {
+			return (parent::user_can('edit_access_level'));
+		}
+		return (parent::user_can('edit_access_level') && $access_level->id() != 0);
+	}
+	/**
+	 * Custom permission check for deleting an access level. May not delete the public or system lord levels
+	 *
+	 * @param string $access_level 
+	 * @return void
+	 * @author Peter Epp
+	 */
+	public function user_can_delete_access_level($access_level = null) {
+		if (empty($access_level) && (!empty($this->params['id']) || $this->params['id'] === 0 || $this->params['id'] === '0')) {
+			$access_level = $this->AccessLevel->find($this->params['id']);
+		}
+		if (empty($access_level)) {
+			return (parent::user_can('delete_access_level'));
+		}
+		return (parent::user_can('delete_access_level') && $access_level->id() != PUBLIC_USER && $access_level->id() != SYSTEM_LORD);
+	}
+	/**
 	 * Log a user in if their credentials are valid, otherwise spit out an error
 	 *
 	 * @return void
@@ -320,14 +490,23 @@ class Authenticator extends AbstractModuleController {
 				Session::flash('login_redirect',$this->params['ref_page']);
 			}
 			$this->set_view_var('is_login_dialog_request',$this->is_login_dialog_request());
+			Event::fire("render_login_form",$this);
+			$this->set_view_var('extra_login_form_code',$this->_extra_login_form_code);
 			$this->render();
 			return;
 		}
 		$valid_credentials = $this->valid_credentials();
 		if ($valid_credentials && $this->account_is_active()) {
-			$this->perform_login();
-		}
-		else {
+			if ($this->is_ajaxy_login() && !$this->is_login_dialog_request()) {
+				$this->Biscuit->render_json(array(true));
+			} else {
+				if (!empty($this->params['keep_logged_in'])) {
+					$this->_keep_logged_in = true;
+					Response::set_cookie('stay_logged_in_as', sha1((int)$this->active_user()->id().BISCUIT_HASH_SALT), time()+(60*60*24*30), '/');
+				}
+				$this->perform_login();
+			}
+		} else {
 			if ($valid_credentials && !$this->account_is_active()) {
 				$status = $this->AccountStatus->find($this->user->status());
 				$message = sprintf(__("Sorry, your account is currently %s."),__($status->name()));
@@ -349,26 +528,43 @@ class Authenticator extends AbstractModuleController {
 		}
 	}
 	/**
+	 * Hook for adding extra code to login form, to be placed under the login fields
+	 *
+	 * @param string $code 
+	 * @return void
+	 * @author Peter Epp
+	 */
+	public function add_login_form_code($code) {
+		$this->_extra_login_form_code = $code;
+	}
+	/**
 	 * Perform actual user login - set their info in session and handle the response
 	 *
 	 * @return void
 	 * @author Peter Epp
 	 */
-	protected function perform_login($is_auto_login = false) {
+	public function perform_login($is_auto_login = false, $skip_redirect = false) {
 		$this->_set_logged_in_session_data();
 		Session::set_expiry();
 
-		$remaining_minutes = $this->session_remaining_time()/60;
+		$session_timeout = $this->session_timeout();
 
-		if (!$this->is_login_dialog_request()) {
-			$message = 'Your login session will expire after %d minutes of inactivity.';
-			if ($is_auto_login) {
-				$full_message = '<br>'.sprintf(__($message),$remaining_minutes);
+		if (!$this->is_login_dialog_request() && !$this->_keep_logged_in) {
+			if ($session_timeout > 0) {
+				$remaining_minutes = $this->session_remaining_time()/60;
+				$message = 'Your login session will expire after %d minutes of inactivity.';
+				if ($is_auto_login) {
+					$full_message = sprintf(__($message),$remaining_minutes);
+				} else {
+					$message = 'Welcome %s. '.$message;
+					$full_message = sprintf(__($message),$this->active_user()->full_name(),$remaining_minutes);
+				}
 			} else {
-				$message = 'Welcome %s. '.$message;
-				$full_message = sprintf(__($message),$this->active_user()->full_name(),$remaining_minutes);
+				$full_message = sprintf(__('Welcome %s.'),$this->active_user()->full_name());
 			}
-			Session::flash('user_success', '<strong>'.$full_message.'</strong>');
+			if (!empty($full_message)) {
+				Session::flash('user_success', '<strong>'.$full_message.'</strong>');
+			}
 		}
 
 		Console::log("                        Successful login for ".$this->active_user()->username());
@@ -391,22 +587,26 @@ class Authenticator extends AbstractModuleController {
 				$redirect_page = "/";
 			}
 		}
-		// Add a timestamp to query string so browser thinks it's a fresh request and doesn't show the user a cached page
-		$redirect_page = Crumbs::add_query_var_to_uri($redirect_page,'_fresh',time());
-
-		if ($this->is_ajaxy_login()) {
-			if ($this->is_login_dialog_request()) {
-				// Return the new remaining login session time via json
-				$this->Biscuit->render_json(array('remaining_session_time' => $this->session_remaining_time()));
-			} else {
-				// Return the redirect page via json
-				$this->Biscuit->render_json(array('redirect_page' => $redirect_page));
-			}
-			// Call to premature end program prevents flash vars from being cleared
-			Bootstrap::end_program();
-		} else {
+		if ($this->is_ajaxy_login() && $this->is_login_dialog_request()) {
+			// Send JSON response with remaining session time
+			$this->Biscuit->render_json(array('remaining_session_time' => $this->session_remaining_time()));
+		} else if (!$skip_redirect) {
 			// Normal redirect
 			Response::redirect($redirect_page);
+		}
+	}
+	/**
+	 * Stuff the active user with any one we choose. This provides a means for authentication extension modules to decide who the current is, for
+	 * example a Facebook login module can use this after it's authenticated the Facebook user and created a local user account using their Facebook
+	 * data. It can call this method, followed by perform_login() to log in the desired user without passing them through the normal login process.
+	 *
+	 * @param string $user 
+	 * @return void
+	 * @author Peter Epp
+	 */
+	public function stuff_active_user($user) {
+		if (is_object($user)) {
+			$this->user = $user;
 		}
 	}
 	/**
@@ -414,7 +614,7 @@ class Authenticator extends AbstractModuleController {
 	 *
 	 * @author Peter Epp
 	 */
-	private function is_login_dialog_request() {
+	protected function is_login_dialog_request() {
 		return (!empty($this->params['login_dialog_request']) && $this->params['login_dialog_request'] == 1);
 	}
 	/**
@@ -423,7 +623,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return void
 	 * @author Peter Epp
 	 */
-	private function is_ajaxy_login() {
+	protected function is_ajaxy_login() {
 		return (Request::is_ajax() && Request::type() == "login");
 	}
 	/**
@@ -450,6 +650,10 @@ class Authenticator extends AbstractModuleController {
 
 		Console::log("                        Clearing session...");
 		Session::reset(true,$this->_logout_keepers);
+		if (!empty($_COOKIE['stay_logged_in_as'])) {
+			Console::log("Resetting cookie that keeps user logged in...");
+			Response::set_cookie('stay_logged_in_as', "", time()-3600, '/');
+		}
 		Console::log("                        Redirecting user...");
 
 		if ($this->is_login_dialog_request()) {
@@ -458,6 +662,9 @@ class Authenticator extends AbstractModuleController {
 
 		if (!empty($this->params['ref_page'])) {
 			$gopage = $this->params['ref_page'];
+			if (substr($gopage,0,1) != '/') {
+				$gopage = '/'.$gopage;
+			}
 		}
 		else {
 			$request_uri = Request::uri();
@@ -481,7 +688,7 @@ class Authenticator extends AbstractModuleController {
 				// As such we'll clear the action from the query so other modules will default to "index"
 				Request::clear_query('action');
 				Request::clear_form('action');
-				$this->Biscuit->set_user_input();
+				Request::set_user_input();
 			}
 		}
 	}
@@ -547,16 +754,21 @@ class Authenticator extends AbstractModuleController {
 			if (empty($user)) {
 				Session::flash('user_error',__("User account could not be found"));
 			} else {
-				$token_code = sha1(Crumbs::random_password(13).microtime());
-				$token_data = array(
-					'user_id' => $user->id(),
-					'token'   => $token_code
-				);
-				$token = $this->PasswordResetToken->create($token_data);
-				$token->save();
-				$this->send_password_reset_email($user,$token);
-				$this->set_view_var('reset_email_sent',true);
-				$this->set_view_var('user',$user);
+				if (!$user->email_address()) {
+					Session::flash('user_error', 'There is no email address associated with your account. Please contact the site administrator for assistance.');
+					Response::redirect('/reset-password');
+				} else {
+					$token_code = sha1(Crumbs::random_password(13).microtime());
+					$token_data = array(
+						'user_id' => $user->id(),
+						'token'   => $token_code
+					);
+					$token = $this->PasswordResetToken->create($token_data);
+					$token->save();
+					$this->send_password_reset_email($user,$token);
+					$this->set_view_var('reset_email_sent',true);
+					$this->set_view_var('user',$user);
+				}
 			}
 		}
 	}
@@ -649,6 +861,22 @@ class Authenticator extends AbstractModuleController {
 		}
 	}
 	/**
+	 * Check if a user ID exists. This always expects to be called by ajax and therefore always renders a JSON response
+	 *
+	 * @return void
+	 * @author Peter Epp
+	 */
+	protected function action_check_username() {
+		$response = array();
+		if (!empty($this->params['username'])) {
+			$user = $this->User->find_by('username',$this->params['username']);
+			$response = array(
+				'exists' => is_object($user)
+			);
+		}
+		$this->Biscuit->render_json($response);
+	}
+	/**
 	 * Validate user input for step 2 of a password reset request
 	 *
 	 * @return void
@@ -666,7 +894,7 @@ class Authenticator extends AbstractModuleController {
 		}
 		// If the security question and answer are required fields for the current site, validate that the user has provided the answer to their
 		// security question
-		if ($user->security_question_is_required() && $user->security_answer_is_required()) {
+		if ($user->has_security_question() && $user->has_security_answer() && $user->security_question_is_required() && $user->security_answer_is_required()) {
 			if (!isset($this->params['security_answer']) || empty($this->params['security_answer']) || $this->params['security_answer'] != $user->security_answer()) {
 				$this->_validation_errors['security_answer'] = __('Please provide the answer to your security question');
 				$this->_invalid_fields[] = 'security_answer';
@@ -681,7 +909,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return void bool Whether or not credentials are valid
 	 * @author Peter Epp
 	 */
-	private function valid_credentials() {
+	protected function valid_credentials() {
 		if (!$this->credentials_submitted()) {
 			Console::log("                        Login_info is empty");
 			return false;
@@ -693,7 +921,7 @@ class Authenticator extends AbstractModuleController {
 
 		$login_info = $this->params['login_info'];
 		$user = $this->_get_user_data($login_info);
-		if (!$user || !$this->_passwords_match(H::purify_text($login_info['password']), $user->password())) {
+		if (!$user || !$this->_passwords_match(Crumbs::html_entity_decode(H::purify_text($login_info['password'])), $user->password())) {
 			Console::log("                        User not found or password mismatch");
 			return false;
 		}
@@ -706,7 +934,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return void
 	 * @author Peter Epp
 	 */
-	private function account_is_active() {
+	protected function account_is_active() {
 		$user = $this->active_user();
 		if (!empty($user)) {
 			return ($user->status() == ACCOUNT_ACTIVE);
@@ -719,7 +947,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return bool Whether or not login info was submitted
 	 * @author Peter Epp
 	 */
-	private function credentials_submitted() {
+	protected function credentials_submitted() {
 		return !empty($this->params['login_info']);
 	}
 	/**
@@ -728,7 +956,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return bool Whether or not a login field was empty
 	 * @author Peter Epp
 	 */
-	private function credentials_submitted_empty() {
+	protected function credentials_submitted_empty() {
 		return (empty($this->params['login_info']['username']) || empty($this->params['login_info']['password']));
 	}
 	/**
@@ -736,7 +964,7 @@ class Authenticator extends AbstractModuleController {
 	 *
 	 * @return void
 	 **/
-	private function set_login_level() {
+	protected function set_login_level() {
 		// Determine the access level for the page
 		if ($this->Biscuit->Page->access_level() > 0) {
 			// If it's not a public page, set the access level to that of the current page as defined in the page_index table
@@ -761,9 +989,7 @@ class Authenticator extends AbstractModuleController {
 	 * @author Lee O'Mara
 	 **/
 	public function user_is_logged_in() {
-		if (Session::var_exists('auth_data')) {
-			$auth_data = Session::get('auth_data');
-		}
+		$auth_data = $this->_get_logged_in_session_data();
 		return (!empty($auth_data) && !empty($auth_data['id']));
 	}
 	/**
@@ -780,6 +1006,16 @@ class Authenticator extends AbstractModuleController {
 		return false;
 	}
 	/**
+	 * Hook for allowing a customised version of the module to define whether or not the currently active user has the power to administer user accounts.
+	 * By default it's synonymous to user_is_super()
+	 *
+	 * @return bool
+	 * @author Peter Epp
+	 */
+	public function user_is_account_administrator() {
+		return $this->user_is_super();
+	}
+	/**
 	 * Fetch the URL to redirect the user to after they logout
 	 *
 	 * @return string URL relative to the site root
@@ -787,7 +1023,7 @@ class Authenticator extends AbstractModuleController {
 	 */
 	public function login_url() {
 		if ($this->user_is_logged_in()) {
-			$auth_data = Session::get('auth_data');
+			$auth_data = $this->_get_logged_in_session_data();
 			$curr_access_level = $auth_data['user_level'];
 		} else {
 			$curr_access_level = PUBLIC_USER;
@@ -836,8 +1072,7 @@ class Authenticator extends AbstractModuleController {
 	 */
 	public function access_levels() {
 		if (empty($this->_access_levels)) {
-			$access_level_factory = new ModelFactory('AccessLevels');
-			$this->_access_levels = $access_level_factory->find_all(array('id' => 'ASC'));
+			$this->_access_levels = $this->AccessLevel->find_all(array('id' => 'ASC'));
 			if (empty($this->_access_levels)) {
 				throw new ModuleException('No user access levels defined!');
 			}
@@ -851,7 +1086,7 @@ class Authenticator extends AbstractModuleController {
 	* 
 	* @return abject False if no user found
 	**/
-	private function _get_user_data($login_info) {
+	protected function _get_user_data($login_info) {
 		return $this->User->find_by('username',H::purify_text($login_info['username']));
 	}
 	/**
@@ -861,9 +1096,9 @@ class Authenticator extends AbstractModuleController {
 	*
 	* @return void
 	**/
-	private function _set_access_info() {
+	protected function _set_access_info() {
 		// Collect the access level data for the current login level:
-		$this->access_info = $this->AccessLevels->find($this->login_level);
+		$this->access_info = $this->AccessLevel->find($this->login_level);
 	}
 	/**
 	* Do the given passwords match?
@@ -871,7 +1106,12 @@ class Authenticator extends AbstractModuleController {
 	* @return boolean
 	* @author Lee O'Mara
 	**/
-	private function _passwords_match($user_input, $stored_pass) {
+	protected function _passwords_match($user_input, $stored_pass) {
+		if ($this->use_hash() == 'secure-hasher') {
+			require_once('authenticator/vendor/PasswordHash.php');
+			$hasher = new PasswordHash(8, false);
+			return $hasher->CheckPassword($user_input, $stored_pass);
+		}
 		return ($this->hash_password($user_input) == $stored_pass);
 	}
 	/**
@@ -880,17 +1120,17 @@ class Authenticator extends AbstractModuleController {
 	 * @return mixed False if hash should not be used, otherwise name of hash function to use if defined
 	 * @author Peter Epp
 	 */
-	private function use_hash() {
+	protected function use_hash() {
 		if (defined("USE_PWD_HASH")) {
 			$use_hash = USE_PWD_HASH;
+		} else {
+			$use_hash = "";
 		}
-		else {
-			$use_hash = "no";
-		}
-		if ($use_hash != "no" && function_exists($use_hash)) {
+		if (!empty($use_hash) && function_exists($use_hash)) {
 			return $use_hash;
 		}
-		return false;
+		// If not otherwise defined, fall back on the secure hasher (PasswordHash framework included in the vendor folder)
+		return 'secure-hasher';
 	}
 	/**
 	 * Hash the provided password for storing in the database (if required) using the hash method defined in the system settings
@@ -900,10 +1140,12 @@ class Authenticator extends AbstractModuleController {
 	 */
 	public function hash_password($password) {
 		$use_hash = $this->use_hash();
-		if (!$use_hash) {
-			return $password;
+		if ($use_hash == 'secure-hasher') {
+			require_once('authenticator/vendor/PasswordHash.php');
+			$hasher = new PasswordHash(8, false);
+			return $hasher->HashPassword($password);
 		}
-		return $use_hash($password);
+		return call_user_func_array($use_hash, array($password));
 	}
 	/**
 	 * Return the URL for the homepage of this level user
@@ -911,7 +1153,7 @@ class Authenticator extends AbstractModuleController {
 	 * @return string
 	 * @author Lee O'Mara
 	 **/
-	private function _get_access_level_home($user_level) {
+	protected function _get_access_level_home($user_level) {
 		$access_levels = $this->access_levels();
 		foreach ($access_levels as $access_level) {
 			if ($access_level->id() == $user_level) {
@@ -925,11 +1167,23 @@ class Authenticator extends AbstractModuleController {
 	* @return void
 	* @author Lee O'Mara
 	**/
-	private function _set_logged_in_session_data() {
+	protected function _set_logged_in_session_data() {
 		$auth_data['id']         = (int)($this->active_user()->id());
 		$auth_data['username']   = $this->active_user()->username();
 		$auth_data['user_level'] = $this->active_user()->user_level();
 		Session::set('auth_data',$auth_data);
+	}
+	/**
+	 * Return logged in session data, if present
+	 *
+	 * @return array|null
+	 * @author Peter Epp
+	 */
+	protected function _get_logged_in_session_data() {
+		if (Session::var_exists('auth_data')) {
+			return Session::get('auth_data');
+		}
+		return null;
 	}
 	/**
 	 * Return the session timeout in seconds for the currently logged in user's level
@@ -937,10 +1191,17 @@ class Authenticator extends AbstractModuleController {
 	 * @return int Number of seconds
 	 * @author Peter Epp
 	 */
-	private function session_timeout() {
-		$auth_data = Session::get('auth_data');
-		$session_timeout = DB::fetch_one("SELECT `session_timeout` FROM `access_levels` WHERE `id` = ?", $auth_data['user_level']);
-		return intval($session_timeout,10) * 60;
+	public function session_timeout() {
+		if ($this->user_is_logged_in() && !$this->_keep_logged_in) {
+			if (empty($this->_session_expiry_timeout)) {
+				$auth_data = $this->_get_logged_in_session_data();
+				$this->_session_expiry_timeout = DB::fetch_one("SELECT `session_timeout` FROM `access_levels` WHERE `id` = ?", $auth_data['user_level']);
+			}
+			if ($this->_session_expiry_timeout > 0) {
+				return intval($this->_session_expiry_timeout,10) * 60;
+			}
+		}
+		return 0;
 	}
 	/**
 	 * Return the unix timestamp of the session expiry time
@@ -949,16 +1210,22 @@ class Authenticator extends AbstractModuleController {
 	 * @author Peter Epp
 	 */
 	public function session_expires_at() {
-		return time() + $this->session_timeout();
+		Event::fire("set_session_expiry_time",$this);
+		$session_timeout = $this->session_timeout();
+		if ($session_timeout) {
+			return time() + $session_timeout;
+		}
+		return 0;
 	}
 	/**
-	 * Prevent caching if a user is logged in
+	 * Explicitly set session timeout in seconds - use to override access level default by hooking in to set_session_expiry_time event.
 	 *
-	 * @return bool
+	 * @param string $seconds 
+	 * @return void
 	 * @author Peter Epp
 	 */
-	protected function can_cache_action() {
-		return (!$this->user_is_logged_in() && parent::can_cache_action());
+	public function set_session_timeout($seconds) {
+		$this->_session_expiry_timeout = $seconds;
 	}
 	/**
 	 * Define access levels prior to dispatch
@@ -1004,46 +1271,41 @@ class Authenticator extends AbstractModuleController {
 				return parent::primary_page();
 		}
 	}
-	public function url($action=null,$id=null) {
+	public function url($action='index',$id=null) {
 		$this->_url_action = $action;
-		return parent::url($action,$id);
+		$url = parent::url($action,$id);
+		if ($action == 'index_access_level') {
+			$url = str_replace('index_access_level', 'access_levels', $url);
+		}
+		return $url;
 	}
 	/**
-	 * Provide rewrite rules for any login pages other than "login"
+	 * Provide mapping rules for any login pages other than "login" as well as logout
 	 *
 	 * @return array
 	 * @author Peter Epp
 	 */
-	public static function rewrite_rules() {
-		$access_level_factory = new ModelFactory('AccessLevels');
-		$access_levels = $access_level_factory->find_all();
-		$rewrite_rules[] = array(
-			'pattern'     => '/^([^\.]+)\/logout\/?$/',
-			'replacement' => 'page_slug=logout&action=logout&ref_page=/$1'
+	public static function uri_mapping_rules() {
+		$mapping_rules = array(
+			'action=index_access_level' => '/^(?P<page_slug>users)\/access_levels\/?$/',
+			'action=logout'    => '/^(?P<ref_page>[^\.]+)\/(?P<page_slug>logout)\/?$/',
+			'page_slug=logout' => '/^(?P<action>logout)\/?$/',
+			'/^(?P<page_slug>users)\/(?P<action>verify_email)\/(?P<user_hash>[a-zA-Z0-9]+)\/?$/',
+			'action=reset_password' => '/^(?P<page_slug>reset-password)(\/(?P<reset_token>[a-zA-Z0-9]+))?\/?$/',
+			'page_slug=index' => '/^(?P<action>ping)(\/[0-9]+)?/',
+			'/^(?P<page_slug>users)\/(?P<action>check_username)\/(?P<username>[a-zA-Z0-9_\-\.\@]+)\/?$/'
 		);
-		$rewrite_rules[] = array(
-			'pattern'     => '/^logout\/?$/',
-			'replacement' => 'page_slug=logout&action=logout'
-		);
-		$rewrite_rules[] = array(
-			'pattern'     => '/^users\/verify_email\/([a-zA-Z0-9]+)\/?$/',
-			'replacement' => 'page_slug=users&action=verify_email&user_hash=$1'
-		);
-		$rewrite_rules[] = array(
-			'pattern'     => '/^reset-password\/([a-zA-Z0-9]+)\/?$/',
-			'replacement' => 'page_slug=reset-password&action=reset_password&reset_token=$1'
-		);
+		$access_levels = ModelFactory::instance('AccessLevel')->find_all();
 		foreach ($access_levels as $access_level) {
 			if ($access_level->login_url() !== null) {
 				$slug = substr($access_level->login_url(),1);
 				$slug = preg_replace('/\//','\/',$slug);
-				$rewrite_rules[] = array(
-					'pattern'     => '/^'.$slug.'$/',
-					'replacement' => 'page_slug='.$slug.'&action=login'
-				);
+				$key = 'page_slug='.$slug.'&action=login';
+				$value = '/^'.$slug.'$/';
+				$mapping_rules[$key] = $value;
 			}
 		}
-		return $rewrite_rules;
+		return $mapping_rules;
 	}
 	/**
 	 * Custom method for adding extra breadcrumbs that only adds crumb for the current action if it's not "login"
@@ -1053,7 +1315,7 @@ class Authenticator extends AbstractModuleController {
 	 * @author Peter Epp
 	 */
 	protected function act_on_build_breadcrumbs($Navigation) {
-		if ($this->action() != 'login' && $this->action() != 'reset_password') {
+		if ($this->Biscuit->Page->slug() == 'users' && $this->action() != 'login' && $this->action() != 'reset_password') {
 			parent::act_on_build_breadcrumbs($Navigation);
 		}
 	}
@@ -1066,14 +1328,26 @@ class Authenticator extends AbstractModuleController {
 	 */
 	protected function act_on_build_admin_menu($caller) {
 		$menu_items = array();
-		if ($this->user_can_create()) {
-			$menu_items['Create'] = $this->url('new');
-		}
 		if ($this->user_can_index()) {
-			$menu_items['Manage'] = $this->url();
+			$menu_items['Manage Users'] = array(
+				'url' => $this->url(),
+				'ui-icon' => 'ui-icon-person'
+			);
+		}
+		if ($this->user_can_create()) {
+			$menu_items['Add User'] = array(
+				'url' => $this->url('new'),
+				'ui-icon' => 'ui-icon-plus'
+			);
+		}
+		if ($this->user_can_index_access_level()) {
+			$menu_items['Manage Access Levels'] = array(
+				'url' => $this->url('index_access_level'),
+				'ui-icon' => 'ui-icon-key'
+			);
 		}
 		if (!empty($menu_items)) {
-			$caller->add_admin_menu_items('Users',$menu_items);
+			$caller->add_admin_menu_items('User Management',$menu_items);
 		}
 	}
 	/**
@@ -1083,10 +1357,10 @@ class Authenticator extends AbstractModuleController {
 	 * @author Peter Epp
 	 */
 	protected function act_on_compile_footer() {
-		if ($this->user_is_logged_in() && !(SERVER_TYPE == 'LOCAL_DEV' && DEBUG)) {
+		if ($this->user_is_logged_in() && $this->session_timeout() > 0 && !(SERVER_TYPE == 'LOCAL_DEV' && DEBUG)) {
 			$remaining_time = $this->session_remaining_time();
 			$js_code = <<<JAVASCRIPT
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
 	$(document).ready(function() {
 		Biscuit.Session.remaining_time = $remaining_time;
 		Biscuit.Session.InitTracker();
@@ -1100,12 +1374,10 @@ JAVASCRIPT;
 	 * Upon successful save of a new user model, if user registered publicly setup an email address verification
 	 *
 	 * @param string $model 
-	 * @param string $old_show_url 
-	 * @param string $new_show_url 
 	 * @return void
 	 * @author Peter Epp
 	 */
-	protected function act_on_successful_save($model,$old_show_url,$new_show_url) {
+	protected function act_on_successful_save($model) {
 		if ($this->is_primary()) {
 			$model_name = Crumbs::normalized_model_name($model);
 			if ($model_name == 'User' && $this->action() == 'new' && !$this->user_is_logged_in()) {
@@ -1179,8 +1451,9 @@ JAVASCRIPT;
 			"Subject"     => "New Account Verification"
 		);
 		$message_vars = array(
-			'user_name' => $user->full_name(),
-			'user_hash' => $hash
+			'Authenticator' => $this,
+			'user'          => $user,
+			'user_hash'     => $hash
 		);
 		$mail = new Mailer();
 		return $mail->send_mail("authenticator/views/email_verification",$options,$message_vars);

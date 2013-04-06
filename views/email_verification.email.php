@@ -1,4 +1,4 @@
-Dear <?php echo $user_name ?>,
+Dear <?php echo $user->full_name(); ?>,
 
 Thank you for registering for a new account with <?php echo html_entity_decode(SITE_TITLE) ?>. In order to complete your registration, please click the following link to confirm your email address:
 

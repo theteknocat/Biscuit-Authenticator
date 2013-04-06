@@ -1,53 +1,100 @@
-var PasswordStrength = {
-	startMeter: function(element_id) {
-		$('#'+element_id).keyup(function() {
-			PasswordStrength.updateStrength($(this).val());
-		});
-	},
-	updateStrength: function(pw) {
-		var strength = this.getStrength(pw);
-		var width = (140/32)*strength;
-		if (width > 50) {
-			$('#pwd-strength-meter').addClass('light');
-		} else if ($('#pwd-strength-meter').hasClass('light')) {
-			$('#pwd-strength-meter').removeClass('light');
-		}
-		$('#pwd-strength-meter').animate({width: width+'px'},50);
-	},
-	getStrength: function(passwd) {
-		intScore = 0;
-		if (passwd.match(/[a-z]/)) // [verified] at least one lower case letter
-		{
-		intScore = (intScore+1)
-		} if (passwd.match(/[A-Z]/)) // [verified] at least one upper case letter
-		{
-		intScore = (intScore+5)
-		} // NUMBERS
-		if (passwd.match(/\d+/)) // [verified] at least one number
-		{
-		intScore = (intScore+5)
-		} if (passwd.match(/(\d.*\d.*\d)/)) // [verified] at least three numbers
-		{
-		intScore = (intScore+5)
-		} // SPECIAL CHAR
-		if (passwd.match(/[!,@#$%^&*?_~]/)) // [verified] at least one special character
-		{
-		intScore = (intScore+5)
-		} if (passwd.match(/([!,@#$%^&*?_~].*[!,@#$%^&*?_~])/)) // [verified] at least two special characters
-		{
-		intScore = (intScore+5)
-		} // COMBOS
-		if (passwd.match(/[a-z]/) && passwd.match(/[A-Z]/)) // [verified] both upper and lower case
-		{
-		intScore = (intScore+2)
-		} if (passwd.match(/\d/) && passwd.match(/\D/)) // [verified] both letters and numbers
-		{
-		intScore = (intScore+2)
-		} // [Verified] Upper Letters, Lower Letters, numbers and special characters
-		if (passwd.match(/[a-z]/) && passwd.match(/[A-Z]/) && passwd.match(/\d/) && passwd.match(/[!,@#$%^&*?_~]/))
-		{
-		intScore = (intScore+2)
-		}
-		return intScore;
-	}
-}
+/*
+ * Password strength jQuery plugin.
+ * Author: Peter Epp
+ * 
+ */
+(function($){ 
+	$.fn.extend({  
+		pwdstr: function(el) {
+			return this.each(function() {
+				var alpha = "abcdefghijklmnopqrstuvwxyz";
+				var upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+				var upper_punct = "~`!@#$%^&*()-_+=";
+				var digits = "1234567890";
+
+				var totalChars = 0x7f - 0x20;
+				var alphaChars = alpha.length;
+				var upperChars = upper.length;
+				var upper_punctChars = upper_punct.length;
+				var digitChars = digits.length;
+				var otherChars = totalChars - (alphaChars + upperChars + upper_punctChars + digitChars);
+
+				function calculateBits(passWord) {
+					if (passWord.length <= 0) {
+						return 0;
+					}
+
+					var fAlpha = false;
+					var fUpper = false;
+					var fUpperPunct = false;
+					var fDigit = false;
+					var fOther = false;
+					var charset = 0;
+
+					for (var i = 0; i < passWord.length; i++) {
+						var char = passWord.charAt(i);
+
+						if (alpha.indexOf(char) != -1)
+							fAlpha = true;
+						else if (upper.indexOf(char) != -1)
+							fUpper = true;
+						else if (digits.indexOf(char) != -1)
+							fDigit = true;
+						else if (upper_punct.indexOf(char) != -1)
+							fUpperPunct = true;
+						else
+							fOther = true;
+					}
+
+					if (fAlpha)
+						charset += alphaChars;
+					if (fUpper)
+						charset += upperChars;
+					if (fDigit)
+						charset += digitChars;
+					if (fUpperPunct)
+						charset += upper_punctChars;
+					if (fOther)
+						charset += otherChars;
+
+					var bits = Math.log(charset) * (passWord.length / Math.log(2));
+
+					return Math.floor(bits);
+				}
+
+				$(this).keyup(function() {
+					var bits = calculateBits($(this).val());
+					var width = 0;
+					var str_text = __('pwd_strength_strength');
+					var bg_color = '#FF4545';
+					if (bits >= 128) {
+						width = 100;
+						bg_color = '#a4ff39';
+						str_text = __('pwd_strength_best');
+					} else {
+						width = Math.floor((bits/128)*100);
+						if (bits > 84) {
+							bg_color = '#a4ff39';
+							str_text = __('pwd_strength_strong');
+						} else if (bits > 42) {
+							bg_color = '#ffc63c';
+							str_text = __('pwd_strength_medium');
+						} else if (bits > 0) {
+							bg_color = '#FF4545';
+							str_text = __('pwd_strength_weak');
+						}
+					}
+					var curr_width = $(el+'-meter').css('width');
+					if (curr_width != width+'%') {
+						$(el+'-meter').css({
+							'background': bg_color,
+							'width': width+'%'
+						});
+						$(el+'-text').text(str_text);
+					}
+				});
+
+			});
+		} 
+	}); 
+})(jQuery);

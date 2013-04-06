@@ -6,7 +6,7 @@ if ($user->is_new() && Request::is_post() && $user->errors()) {
 	$password_confirmation = Request::form('password_confirmation');
 }
 $cancel_url = $Authenticator->return_url();
-if (!$Authenticator->user_is_logged_in() || !$Authenticator->user_is_super() || $user->is_new()) {
+if (!$Authenticator->user_is_logged_in() || $user->is_new()) {
 	$user_level = 1;
 } else {
 	$user_level = $user->user_level();
@@ -19,20 +19,22 @@ if (!$Authenticator->user_is_logged_in() || !$Authenticator->user_is_super() || 
 	<input type="hidden" name="current_password" value="<?php echo $user->password() ?>">
 		<?php
 	}
-	if (!empty($access_level_list) && !empty($account_status_list)) {
+	if (!empty($access_level_list)) {
 		print ModelForm::select($access_level_list,$user,'user_level');
-		print ModelForm::select($account_status_list,$user,'status');
 	} else {
 		?>
 		<input type="hidden" name="user[user_level]" value="<?php echo $user_level ?>">
 		<?php
+	}
+	if (!empty($account_status_list)) {
+		print ModelForm::select($account_status_list,$user,'status');
 	}
 
 	print ModelForm::text($user,'first_name');
 	
 	print ModelForm::text($user,'last_name');
 	
-	print ModelForm::text($user,'username');
+	print ModelForm::text($user,'username','May contain only letters, numbers, hyphens, underscores, @ symbols and periods');
 	
 	print ModelForm::password($user,'password',null,array('show_strength_meter' => true, 'autocomplete' => 'off'));
 
@@ -51,12 +53,9 @@ if (!$Authenticator->user_is_logged_in() || !$Authenticator->user_is_super() || 
 
 	// print ModelForm::text($user,'security_answer','You can leave these blank, but they will be required if you want to be able to reset your password.');
 
-	print Form::footer($Authenticator,$user,(!$user->is_new() && $Authenticator->user_can_delete($user)),__('Submit'),$cancel_url) ?>
-<script type="text/javascript" charset="utf-8">
+	print Form::footer($Authenticator,$user,(!$user->is_new() && $Authenticator->user_can_delete($user)),__('Save'),$cancel_url) ?>
+<script type="text/javascript">
 	$(document).ready(function() {
-		$('#user-edit-form').submit(function() {
-			new Biscuit.Ajax.FormValidator('user-edit-form');
-			return false;
-		});
+		Biscuit.Crumbs.Forms.AddValidation('user-edit-form');
 	});
 </script>

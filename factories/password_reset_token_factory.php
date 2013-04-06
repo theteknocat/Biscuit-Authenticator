@@ -2,8 +2,10 @@
 /**
  * Custom factory for the password reset tokens table
  *
- * @package default
+ * @package Modules
+ * @subpackage Authenticator
  * @author Peter Epp
+ * @version $Id: password_reset_token_factory.php 13843 2011-07-27 19:45:49Z teknocat $
  */
 class PasswordResetTokenFactory extends ModelFactory {
 	/**

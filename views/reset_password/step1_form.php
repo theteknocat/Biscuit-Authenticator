@@ -6,7 +6,7 @@
 	</p>
 	<div class="controls"><a href="/login">Cancel</a><input type="submit" class="SubmitButton" name="SubmitButton" value="Next"></div>
 </form>
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
 	$(document).ready(function() {
 		$('#attr_username').focus();
 		$('#reset-password-form').submit(function() {

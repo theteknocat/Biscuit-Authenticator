@@ -1,9 +1,9 @@
 <span id="pwd-strength">
-	<span id="pwd-meter-container"><span id="pwd-strength-meter" class="small">&nbsp;&nbsp;Strength</span></span>
+	<span id="pwd-meter-container"><span id="pwd-strength-meter">&nbsp;&nbsp;<span id="pwd-strength-text"><?php echo __('Strength'); ?></span></span></span>
 </span>
-<span class="instructions">We enforce strong passwords to help you protect your information. Your password must be at least 8 characters and include both upper and lower case letters with at least one number and one symbol.</span>
-<script type="text/javascript" charset="utf-8">
+<span class="instructions"><?php echo __('Must be at least 8 characters long. Use the strength meter as a guide to help you set a strong password.'); ?> <a href="http://www.microsoft.com/security/online-privacy/passwords-create.aspx" target="_blank"><?php echo __('Tips on creating a strong password'); ?></a></span>
+<script type="text/javascript">
 	$(document).ready(function() {
-		PasswordStrength.startMeter('attr_<?php echo $attribute_id ?>');
+	    $('#attr_<?php echo $attribute_id; ?>').pwdstr('#pwd-strength');
 	});
 </script>

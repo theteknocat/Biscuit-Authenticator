@@ -1,0 +1,4 @@
+name = "Authenticator"
+description = "Biscuit's Core authentication module"
+version = "2.2"
+required = true
