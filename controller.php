@@ -15,7 +15,7 @@ if (!defined('BISCUIT_HASH_SALT')) {
  * @author Peter Epp
  * @copyright Copyright (c) 2009 Peter Epp (http://teknocat.org)
  * @license GNU Lesser General Public License (http://www.gnu.org/licenses/lgpl.html)
- * @version 2.0 $Id: controller.php 14791 2013-02-07 20:58:14Z teknocat $
+ * @version 2.0 $Id: controller.php 14804 2013-05-08 16:01:47Z teknocat $
  **/
 class Authenticator extends AbstractModuleController {
 	/**
@@ -422,7 +422,7 @@ class Authenticator extends AbstractModuleController {
 			return (parent::user_can('edit'));
 		}
 		$active_user = $this->active_user();
-		return (parent::user_can('edit') && ($active_user->user_level() > $user->user_level() || $active_user->id() == $user->id()));
+		return (parent::user_can('edit') && ($active_user->user_level() >= $user->user_level() || $active_user->id() == $user->id()));
 	}
 	/**
 	 * Special permission check to see if the current user can delete
@@ -439,7 +439,7 @@ class Authenticator extends AbstractModuleController {
 			return (parent::user_can('delete'));
 		}
 		$active_user = $this->active_user();
-		return (parent::user_can('delete') && $user->user_level() < SYSTEM_LORD && ($active_user->user_level() > $user->user_level() || $active_user->id() == $user->id()));
+		return (parent::user_can('delete') && $user->user_level() < SYSTEM_LORD && $active_user->user_level() >= $user->user_level());
 	}
 	/**
 	 * Custom edit permission check for access levels to prevent editing of public level
